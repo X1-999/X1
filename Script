@@ -2,10 +2,9 @@
 -- Booting Library
 local OrionLib = loadstring(game:HttpGet(('https://raw.githubusercontent.com/shlexware/Orion/main/source')))()
 
-
-
+game.Players.LocalPlayer.Character.Head.NameGUI.TextBox.Text = "هذا السكربت من صناعه 🇮🇶X1"
 -- Creating Window
-local Window = OrionLib:MakeWindow({Name = "كلان X1 v0.02", HidePremium = false, SaveConfig = true, ConfigFolder = "OrionTest"})
+local Window = OrionLib:MakeWindow({Name = "كلان X1 v0.05", HidePremium = false, SaveConfig = true, ConfigFolder = "OrionTest"})
 
 local Tab = Window:MakeTab({
 	Name = "🔥القسم الرئيسي🔥",
@@ -19,6 +18,11 @@ local Tab2 = Window:MakeTab({
 	PremiumOnly = false
 })
 
+local Tab3 = Window:MakeTab({
+	Name = "الاسماء المميزه",
+	Icon = "rbxassetid://4483345998",
+	PremiumOnly = false
+})
 
 Tab:AddTextbox({
 	Name = "🏃Walk Speed",
@@ -42,6 +46,7 @@ Tab:AddTextbox({
 local Section = Tab:AddSection({
 	Name = "هذا الكاشف بسيط من صنعي🔴"
 })
+
 
 
 Tab:AddButton({
@@ -108,7 +113,7 @@ loadstring(game:HttpGet("https://rawscripts.net/raw/Universal-Script-Fly-v3-7412
 })
 
 Tab:AddButton({
-	Name = "🔥Fling🔥",
+	Name = "💯Fling💯",
 	Callback = function()
 loadstring(game:HttpGet("https://raw.githubusercontent.com/0Ben1/fe./main/Fling%20GUI"))()
 end
@@ -121,10 +126,39 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/n0kc/AtomicHub/main/M
   	end    
 })
 
+Tab:AddButton({
+	Name = "🔥رحمهV2🔥",
+	Callback = function()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/VR7ss/OMK/main/VR7%20RAGDOLL"))()
+  	end    
+})
+
+Tab:AddButton({
+	Name = "✨هاكREDZ✨",
+	Callback = function()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/REDzHUB/REDzHUB/main/REDzHUB"))()
+  	end    
+})
+
+Tab:AddButton({
+	Name = "✨Admin✨️",
+	Callback = function()
+loadstring(game:HttpGet(('https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source'),true))()
+  	end    
+})
+
 ------
 
 Tab2:AddButton({
-	Name = "🔥رحمهV1🔥",
+	Name = "🔥Fling🔥",
+	Callback = function()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/0Ben1/fe./main/Fling%20GUI"))()
+end
+})
+
+
+Tab2:AddButton({
+	Name = "⭐Fling++⭐",
 	Callback = function()
 loadstring("\108\111\97\100\115\116\114\105\110\103\40\103\97\109\101\58\72\116\116\112\71\101\116\40\34\104\116\116\112\115\58\47\47\114\97\119\46\103\105\116\104\117\98\117\115\101\114\99\111\110\116\101\110\116\46\99\111\109\47\65\99\117\114\97\88\48\52\57\47\111\98\102\117\115\99\97\116\101\100\83\99\114\105\112\116\115\47\109\97\105\110\47\75\105\108\108\71\117\105\34\41\41\40\41\10")()
   	end    

@@ -1,165 +1,1150 @@
+if _G.VANTA_DRONE_SHUTDOWN then pcall(_G.VANTA_DRONE_SHUTDOWN) task.wait(0.05) end
 
--- Booting Library
-local OrionLib = loadstring(game:HttpGet(('https://raw.githubusercontent.com/shlexware/Orion/main/source')))()
+local Players        = game:GetService("Players")
+local RS             = game:GetService("ReplicatedStorage")
+local RunService     = game:GetService("RunService")
+local UIS            = game:GetService("UserInputService")
+local Lighting       = game:GetService("Lighting")
+local TweenService   = game:GetService("TweenService")
+local LP             = Players.LocalPlayer
+local camera         = workspace.CurrentCamera
+local PG             = LP:WaitForChild("PlayerGui")
 
-game.Players.LocalPlayer.Character.Head.NameGUI.TextBox.Text = "هذا السكربت من صناعه 🇮🇶X1"
--- Creating Window
-local Window = OrionLib:MakeWindow({Name = "كلان X1 v0.05", HidePremium = false, SaveConfig = true, ConfigFolder = "OrionTest"})
+local MenuToys       = RS:WaitForChild("MenuToys")
+local SpawnToyRF     = MenuToys:WaitForChild("SpawnToyRemoteFunction")
+local GrabEvents     = RS:WaitForChild("GrabEvents")
+local CreateGrabLine = GrabEvents:WaitForChild("CreateGrabLine")
+local DestroyGrab    = GrabEvents:WaitForChild("DestroyGrabLine")
+local SetNetOwner    = GrabEvents:WaitForChild("SetNetworkOwner")
+local ExtendLine     = GrabEvents:WaitForChild("ExtendGrabLine")
 
-local Tab = Window:MakeTab({
-	Name = "🔥القسم الرئيسي🔥",
-	Icon = "rbxassetid://4483345998",
-	PremiumOnly = false
-})
+local CFG = {
+    BombName         = "BombMissile",
+    BodyName         = "Body",
+    NoseOffset       = 1.375,
+    Speed            = 280,
+    MinSpeed         = 0,
+    MaxSpeed         = 3500,
+    SpeedStep        = 35,
+    BoostDash        = 1000,
+    BoostDashTime    = 1.6,
+    LinearAccel      = 750,
+    LinearDecel      = 950,
+    AngularDamp      = 15,
+    MaxBankAngle     = 65,
+    BankFactor       = 2.0,
+    HoverBobble      = 0.04,
+    GyroP            = 16000,
+    GyroD            = 450,
+    LaunchUpSpeed    = 180,
+    LaunchDuration   = 0.65,
+    TurnSensTouch    = 0.32,
+    TurnSensMouse    = 0.24,
+    PitchLimit       = 85,
+    SwipeUnlockLimit = 8,
+    CamMode          = "FPV",
+    FOV_FPV_Base     = 95,
+    FOV_FPV_Max      = 125,
+    FOV_TPV          = 85,
+    CamNoseOffset    = 2.3,
+    CamBack_TPV      = 16,
+    CamUp_TPV        = 4.5,
+    ShakeIntensity   = 0.35,
+    TerminalSpeed    = 1450,
+    GuideGain        = 32,
+    MaxLeadTime      = 0.3,
+    OrbitRadius      = 80,
+    OrbitSpeed       = 85,
+    ScanRadius       = 800,
+    ThemeColor       = Color3.fromRGB(0, 255, 170),
+    AlertColor       = Color3.fromRGB(255, 50, 50),
+    LockColor        = Color3.fromRGB(255, 40, 40),
+    OrbitColor       = Color3.fromRGB(0, 180, 255),
+}
 
-local Tab2 = Window:MakeTab({
-	Name = "💯القسم fling🔥",
-	Icon = "rbxassetid://4483345998",
-	PremiumOnly = false
-})
+local persistentTarget = nil
+local CONNECTIONS     = {}
+local sg              = nil
+local ui              = {}
+local active          = false
+local bomb            = nil
+local bombBody        = nil
+local dragPart        = nil
+local savedDrag       = nil
+local bv, bg          = nil, nil
+local yaw, pitch      = 0, 0
+local currentRoll     = 0
+local currentSpeed    = CFG.Speed
+local lastPos         = nil
+local lastYaw         = 0
+local smoothedTurnRate= 0
+local savedCam        = {}
+local steeringTouch   = false
+local boostActive     = false
+local lastOwnerTick   = 0
+local lockedTarget    = nil
+local espSquares      = {}
+local hiddenParts     = {}
+local hiddenButtons   = {}
+local hiddenLineParts = {}
+local dashEndTime     = 0
+local shakeX, shakeY  = 0, 0
+local killCount       = 0
+local lastKnownHealth = {}
+local flightStartTime = 0
+local thermalActive   = false
+local colorCorrection = nil
+local holdingPlus     = false
+local holdingMinus    = false
+local holdTimer       = 0
+local isLaunching     = false
+local launchEndTime   = 0
+local orbitActive     = false
+local orbitAngle      = 0
+local zoomLevel       = 1
+local lastWarnSound   = 0
 
-local Tab3 = Window:MakeTab({
-	Name = "الاسماء المميزه",
-	Icon = "rbxassetid://4483345998",
-	PremiumOnly = false
-})
+local sharedRayParams = RaycastParams.new()
+sharedRayParams.FilterType = Enum.RaycastFilterType.Exclude
 
-Tab:AddTextbox({
-	Name = "🏃Walk Speed",
-	Default = "16",
-	TextDisappear = true,
-	Callback = function(Value)
-		game.Players.LocalPlayer.Character.Humanoid.WalkSpeed = Value
-	end	  
-})
-
-
-Tab:AddTextbox({
-	Name = "🪂Jump Power",
-	Default = "50",
-	TextDisappear = true,
-	Callback = function(Value)
-		game.Players.LocalPlayer.Character.Humanoid.JumpPower = Value
-	end	  
-})
-
-local Section = Tab:AddSection({
-	Name = "هذا الكاشف بسيط من صنعي🔴"
-})
-
-
-
-Tab:AddButton({
-	Name = "🔴Esp",
-	Callback = function()
-local Players = game:GetService("Players"):GetChildren()
-local RunService = game:GetService("RunService")
-local highlight = Instance.new("Highlight")
-highlight.Name = "Highlight"
-
-for i, v in pairs(Players) do
-    repeat wait() until v.Character
-    if not v.Character:FindFirstChild("HumanoidRootPart"):FindFirstChild("Highlight") then
-        local highlightClone = highlight:Clone()
-        highlightClone.Adornee = v.Character
-        highlightClone.Parent = v.Character:FindFirstChild("HumanoidRootPart")
-        highlightClone.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        highlightClone.Name = "Highlight"
-    end
-end
-
-game.Players.PlayerAdded:Connect(function(player)
-    repeat wait() until player.Character
-    if not player.Character:FindFirstChild("HumanoidRootPart"):FindFirstChild("Highlight") then
-        local highlightClone = highlight:Clone()
-        highlightClone.Adornee = player.Character
-        highlightClone.Parent = player.Character:FindFirstChild("HumanoidRootPart")
-        highlightClone.Name = "Highlight"
-    end
-end)
-
-game.Players.PlayerRemoving:Connect(function(playerRemoved)
-    playerRemoved.Character:FindFirstChild("HumanoidRootPart").Highlight:Destroy()
-end)
-
-RunService.Heartbeat:Connect(function()
-    for i, v in pairs(Players) do
-        repeat wait() until v.Character
-        if not v.Character:FindFirstChild("HumanoidRootPart"):FindFirstChild("Highlight") then
-            local highlightClone = highlight:Clone()
-            highlightClone.Adornee = v.Character
-            highlightClone.Parent = v.Character:FindFirstChild("HumanoidRootPart")
-            highlightClone.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-            highlightClone.Name = "Highlight"
-            task.wait()
+local soundCache = {}
+local function playSystemSound(soundName, pitch)
+    task.spawn(function()
+        local s = soundCache[soundName]
+        if not s or not s.Parent then
+            s = Instance.new("Sound")
+            s.SoundId = "rbxasset://sounds/" .. soundName
+            s.Volume = 0.85
+            s.Parent = workspace
+            soundCache[soundName] = s
         end
+        s.Pitch = pitch or 1
+        s:Play()
+    end)
 end
+
+local function addConn(c) table.insert(CONNECTIONS, c); return c end
+
+local function getBombMissile()
+    local gp = workspace:FindFirstChild("GrabParts")
+    if not gp then return nil end
+    local grabPart = gp:FindFirstChild("GrabPart")
+    if not grabPart then return nil end
+    local weld = grabPart:FindFirstChild("WeldConstraint")
+    if not weld then return nil end
+    local p = weld.Part1
+    if not p or not p:IsA("BasePart") then return nil end
+    local model = p:FindFirstAncestorOfClass("Model")
+    if not model or model.Name ~= CFG.BombName then return nil end
+    local body = model:FindFirstChild(CFG.BodyName, true)
+    if not body then return nil end
+    return model, gp, grabPart, body
+end
+
+local function killMovers(part)
+    for _, c in ipairs(part:GetChildren()) do
+        if c:IsA("BodyMover") or c:IsA("Constraint") or c:IsA("LinearVelocity") or c:IsA("AlignOrientation") then
+            pcall(function() c:Destroy() end)
+        end
+    end
+end
+
+local function quickSpawnAndGrab()
+    local char = LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    local spawnCF = hrp.CFrame * CFrame.new(0, 3, -4)
+    local ok = pcall(function()
+        SpawnToyRF:InvokeServer(CFG.BombName, spawnCF, Vector3.zero)
+    end)
+    if not ok then return false end
+
+    task.spawn(function()
+        local folder = workspace:WaitForChild(LP.Name.."SpawnedInToys", 5)
+        if not folder then return end
+        local bombModel
+        local t0 = tick()
+        while tick() - t0 < 2.5 do
+            bombModel = folder:FindFirstChild(CFG.BombName)
+            if bombModel then break end
+            task.wait(0.04)
+        end
+        if not bombModel then return end
+        task.wait(0.06)
+        local body = bombModel:FindFirstChild(CFG.BodyName, true) or bombModel.PrimaryPart
+        if not body then return end
+        pcall(function() CreateGrabLine:FireServer(body, CFrame.new()) end)
+        task.wait(0.04)
+        local hrp2 = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        if hrp2 then
+            local lookCF = CFrame.lookAt(hrp2.Position, body.Position)
+            pcall(function() SetNetOwner:FireServer(body, lookCF) end)
+            task.wait(0.04)
+            pcall(function() SetNetOwner:FireServer(body, lookCF) end)
+            task.wait(0.04)
+            pcall(function() ExtendLine:FireServer(6) end)
+        end
+    end)
+    return true
+end
+
+local function hideBombVisuals()
+    if not bomb then return end
+    hiddenParts = {}
+    for _, d in ipairs(bomb:GetDescendants()) do
+        if d:IsA("BasePart") then
+            hiddenParts[d] = { t = d.Transparency, q = d.CanQuery }
+            d.Transparency = 1
+            d.CanQuery = false
+        end
+    end
+end
+
+local function showBombVisuals()
+    for part, data in pairs(hiddenParts) do
+        if part and part.Parent then
+            part.Transparency = data.t
+            part.CanQuery = data.q
+        end
+    end
+    hiddenParts = {}
+end
+
+local function hideGameButtons()
+    hiddenButtons = {}
+    local function scan(g)
+        if not g then return end
+        for _, d in ipairs(g:GetDescendants()) do
+            if d:IsA("ImageButton") or d:IsA("TextButton") then
+                local p = d.Parent
+                if p and p.Visible then
+                    hiddenButtons[p] = true
+                    p.Visible = false
+                end
+            end
+        end
+    end
+    scan(PG:FindFirstChild("ContextActionGui"))
+    scan(PG:FindFirstChild("TouchGui"))
+    scan(PG:FindFirstChild("TouchControlFrame"))
+end
+
+local function showGameButtons()
+    for btn, _ in pairs(hiddenButtons) do
+        if btn and btn.Parent then pcall(function() btn.Visible = true end) end
+    end
+    hiddenButtons = {}
+end
+
+local function hideGrabLine()
+    hiddenLineParts = {}
+    local function mark(d)
+        if d:IsA("BasePart") and d ~= bombBody then
+            if hiddenLineParts[d] == nil then
+                hiddenLineParts[d] = { t = d.Transparency }
+                d.Transparency = 1
+            end
+        elseif d:IsA("Beam") or d:IsA("Trail") then
+            if hiddenLineParts[d] == nil then
+                hiddenLineParts[d] = { e = d.Enabled }
+                d.Enabled = false
+            end
+        end
+    end
+    local gp = workspace:FindFirstChild("GrabParts")
+    if gp then
+        for _, d in ipairs(gp:GetDescendants()) do mark(d) end
+        addConn(gp.DescendantAdded:Connect(function(d) if active then mark(d) end end))
+    end
+end
+
+local function showGrabLine()
+    for obj, data in pairs(hiddenLineParts) do
+        if obj and obj.Parent then
+            if data.t then pcall(function() obj.Transparency = data.t end) end
+            if data.e then pcall(function() obj.Enabled = data.e end) end
+        end
+    end
+    hiddenLineParts = {}
+end
+
+local function applyCamMode()
+    if not bomb then return end
+    if CFG.CamMode == "FPV" then hideBombVisuals() else showBombVisuals() end
+end
+
+local function createESPSquare(player)
+    local frame = Instance.new("Frame")
+    frame.Name = "ESP_"..player.Name
+    frame.BackgroundTransparency = 1
+    frame.Size = UDim2.new(0, 44, 0, 44)
+    frame.Visible = false
+    frame.ZIndex = 5
+    frame.Parent = sg
+    
+    local stroke = Instance.new("UIStroke", frame)
+    stroke.Color = CFG.ThemeColor
+    stroke.Thickness = 1.5
+
+    local infoBox = Instance.new("Frame", frame)
+    infoBox.Size = UDim2.new(1, 80, 0, 26)
+    infoBox.Position = UDim2.new(0.5, -40, 1, 4)
+    infoBox.BackgroundTransparency = 1
+
+    local nameLbl = Instance.new("TextLabel", infoBox)
+    nameLbl.Name = "NameLbl"
+    nameLbl.Size = UDim2.new(1, 0, 0, 13)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.TextColor3 = CFG.ThemeColor
+    nameLbl.Font = Enum.Font.Code
+    nameLbl.TextSize = 10
+    nameLbl.TextStrokeTransparency = 0.5
+    nameLbl.Text = string.upper(player.DisplayName)
+
+    local distLbl = Instance.new("TextLabel", infoBox)
+    distLbl.Name = "DistLbl"
+    distLbl.Size = UDim2.new(1, 0, 0, 12)
+    distLbl.Position = UDim2.new(0, 0, 0, 13)
+    distLbl.BackgroundTransparency = 1
+    distLbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+    distLbl.Font = Enum.Font.Code
+    distLbl.TextSize = 9
+    distLbl.TextStrokeTransparency = 0.5
+
+    local tap = Instance.new("TextButton", frame)
+    tap.Size = UDim2.new(1, 0, 1, 0)
+    tap.BackgroundTransparency = 1
+    tap.Text = ""
+    tap.MouseButton1Click:Connect(function()
+        if persistentTarget == player then
+            persistentTarget = nil
+            lockedTarget = nil
+            orbitActive = false
+            stroke.Color = CFG.ThemeColor
+            nameLbl.TextColor3 = CFG.ThemeColor
+            playSystemSound("button.wav", 0.8)
+        else
+            persistentTarget = player
+            lockedTarget = player
+            stroke.Color = CFG.LockColor
+            nameLbl.TextColor3 = CFG.LockColor
+            playSystemSound("electronicpingshort.wav", 1.5)
+        end
+    end)
+    espSquares[player] = frame
+    return frame
+end
+
+local function updateESP()
+    local origin = bombBody and bombBody.Position or camera.CFrame.Position
+    for player, frame in pairs(espSquares) do
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health <= 0 then
+            frame.Visible = false
+            continue
+        end
+        local dist = (root.Position - origin).Magnitude
+        if dist > CFG.ScanRadius then
+            frame.Visible = false
+            continue
+        end
+        local sp, onScreen = camera:WorldToViewportPoint(root.Position)
+        if not onScreen then
+            frame.Visible = false
+            continue
+        end
+        local size = math.clamp(3000 / math.max(dist, 10), 28, 110)
+        frame.Size = UDim2.new(0, size, 0, size)
+        frame.Position = UDim2.new(0, sp.X - size/2, 0, sp.Y - size/2)
+
+        local isLocked = (lockedTarget == player)
+        local stroke = frame:FindFirstChildOfClass("UIStroke")
+        local infoBox = frame:FindFirstChildOfClass("Frame")
+        if stroke then
+            local color = isLocked and (orbitActive and CFG.OrbitColor or CFG.LockColor) or CFG.ThemeColor
+            stroke.Color = color
+            stroke.Thickness = isLocked and 2.5 or 1.5
+        end
+        if infoBox then
+            local dl = infoBox:FindFirstChild("DistLbl")
+            local nl = infoBox:FindFirstChild("NameLbl")
+            if dl then dl.Text = string.format("%.0fm", dist) end
+            if nl then
+                local color = isLocked and (orbitActive and CFG.OrbitColor or CFG.LockColor) or CFG.ThemeColor
+                nl.TextColor3 = color
+            end
+        end
+        frame.Visible = true
+    end
+end
+
+local function clearESP()
+    for _, f in pairs(espSquares) do if f then f:Destroy() end end
+    espSquares = {}
+end
+
+addConn(Players.PlayerRemoving:Connect(function(plr)
+    if espSquares[plr] then
+        espSquares[plr]:Destroy()
+        espSquares[plr] = nil
+    end
+    if lockedTarget == plr then lockedTarget = nil end
+    if persistentTarget == plr then persistentTarget = nil end
+end))
+
+local function exitFPV(wasExplosion)
+    if not active then return end
+    active = false
+    lockedTarget = nil
+    orbitActive = false
+    isLaunching = false
+    zoomLevel = 1
+
+    if bombBody and bombBody.Parent then
+        bombBody.AssemblyLinearVelocity = Vector3.zero
+        bombBody.AssemblyAngularVelocity = Vector3.zero
+    end
+
+    if bv then pcall(function() bv:Destroy() end); bv = nil end
+    if bg then pcall(function() bg:Destroy() end); bg = nil end
+
+    if dragPart and dragPart.Parent then
+        pcall(function() DestroyGrab:FireServer(dragPart) end)
+    end
+    savedDrag = nil
+
+    if wasExplosion and ui.impactFlash then
+        playSystemSound("splat.wav", 0.7)
+        ui.impactFlash.Visible = true
+        task.delay(0.25, function()
+            if ui.impactFlash then ui.impactFlash.Visible = false end
+        end)
+    else
+        playSystemSound("button.wav", 1)
+    end
+
+    showBombVisuals()
+    showGameButtons()
+    showGrabLine()
+    clearESP()
+
+    pcall(function()
+        camera.CameraType = savedCam.type or Enum.CameraType.Custom
+        camera.FieldOfView = savedCam.fov or 70
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum then camera.CameraSubject = hum
+        elseif savedCam.subject then camera.CameraSubject = savedCam.subject end
+    end)
+
+    bomb = nil; bombBody = nil; dragPart = nil
+    lastPos = nil
+    UIS.MouseBehavior = Enum.MouseBehavior.Default
+
+    if thermalActive then
+        thermalActive = false
+        if colorCorrection then colorCorrection.Enabled = false end
+    end
+
+    if sg then sg.Enabled = false end
+    if ui.quickBtn then ui.quickBtn.Visible = true end
+end
+
+local function enterFPV(model, grabParts, dragP, body)
+    bomb = model; dragPart = dragP; bombBody = body
+
+    savedDrag = {}
+    for _, c in ipairs(dragP:GetChildren()) do
+        if c:IsA("AlignPosition") or c:IsA("AlignOrientation") or c:IsA("BodyMover") then
+            savedDrag[c] = c.Enabled
+            c.Enabled = false
+        end
+    end
+
+    killMovers(bombBody)
+
+    local look = camera.CFrame.LookVector
+    yaw   = math.deg(math.atan2(-look.X, -look.Z))
+    pitch = 18
+    currentRoll = 0
+    lastYaw = yaw
+    smoothedTurnRate = 0
+    dashEndTime = 0
+    flightStartTime = tick()
+    orbitActive = false
+    orbitAngle = 0
+    zoomLevel = 1
+
+    isLaunching = true
+    launchEndTime = tick() + CFG.LaunchDuration
+
+    if persistentTarget and persistentTarget.Parent and persistentTarget.Character then
+        local hum = persistentTarget.Character:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 then
+            lockedTarget = persistentTarget
+            playSystemSound("electronicpingshort.wav", 1.8)
+        else
+            persistentTarget = nil
+            lockedTarget = nil
+        end
+    else
+        lockedTarget = nil
+    end
+
+    bv = Instance.new("BodyVelocity")
+    bv.Name = "VantaDroneBV"
+    bv.MaxForce = Vector3.new(1e8, 1e8, 1e8)
+    bv.Velocity = Vector3.new(0, CFG.LaunchUpSpeed, 0)
+    bv.Parent = bombBody
+
+    bg = Instance.new("BodyGyro")
+    bg.Name = "VantaDroneBG"
+    bg.MaxTorque = Vector3.new(1e8, 1e8, 1e8)
+    bg.P = CFG.GyroP
+    bg.D = CFG.GyroD
+    bg.CFrame = bombBody.CFrame
+    bg.Parent = bombBody
+
+    model.PrimaryPart = bombBody
+    lastPos = bombBody.Position
+    currentSpeed = CFG.Speed
+
+    savedCam.type = camera.CameraType
+    savedCam.subject = camera.CameraSubject
+    savedCam.fov = camera.FieldOfView
+    camera.CameraType = Enum.CameraType.Scriptable
+
+    clearESP()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP then createESPSquare(plr) end
+    end
+
+    hideGameButtons()
+    hideGrabLine()
+    applyCamMode()
+
+    active = true
+    if sg then 
+        sg.Enabled = true
+        ui.hudContainer.Visible = true
+        if ui.impactFlash then ui.impactFlash.Visible = false end
+    end
+    if ui.quickBtn then ui.quickBtn.Visible = false end
+    playSystemSound("snap.wav", 1.2)
+end
+
+addConn(UIS.InputBegan:Connect(function(input, gpe)
+    if not active or gpe then return end
+    if input.UserInputType == Enum.UserInputType.Touch then steeringTouch = true end
+end))
+
+addConn(UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch then steeringTouch = false end
+end))
+
+addConn(UIS.InputChanged:Connect(function(input)
+    if not active then return end
+    local dx, dy = 0, 0
+    if input.UserInputType == Enum.UserInputType.Touch and steeringTouch then
+        dx, dy = input.Delta.X * (CFG.TurnSensTouch / zoomLevel), input.Delta.Y * (CFG.TurnSensTouch / zoomLevel)
+    elseif input.UserInputType == Enum.UserInputType.MouseMovement then
+        local d = UIS:GetMouseDelta()
+        dx, dy = d.X * (CFG.TurnSensMouse / zoomLevel), d.Y * (CFG.TurnSensMouse / zoomLevel)
+    end
+
+    if (math.abs(dx) > CFG.SwipeUnlockLimit or math.abs(dy) > CFG.SwipeUnlockLimit) then
+        if lockedTarget or orbitActive then
+            lockedTarget = nil
+            persistentTarget = nil
+            orbitActive = false
+            playSystemSound("button.wav", 0.7)
+        end
+    end
+
+    if not lockedTarget and not orbitActive then
+        yaw   = yaw - dx
+        pitch = math.clamp(pitch - dy, -CFG.PitchLimit, CFG.PitchLimit)
+    end
+end))
+
+addConn(RunService.RenderStepped:Connect(function(dt)
+    if holdingPlus then
+        holdTimer = holdTimer + dt
+        if holdTimer > 0.15 then
+            CFG.Speed = math.min(CFG.MaxSpeed, CFG.Speed + math.floor(450 * dt))
+            if ui.speedLbl then ui.speedLbl.Text = tostring(math.floor(CFG.Speed)) end
+        end
+    elseif holdingMinus then
+        holdTimer = holdTimer + dt
+        if holdTimer > 0.15 then
+            CFG.Speed = math.max(CFG.MinSpeed, CFG.Speed - math.floor(450 * dt))
+            if ui.speedLbl then ui.speedLbl.Text = tostring(math.floor(CFG.Speed)) end
+        end
+    else
+        holdTimer = 0
+    end
+
+    if not active then
+        local model, gp, dp, bp = getBombMissile()
+        if model and bp then enterFPV(model, gp, dp, bp) end
+        return
+    end
+
+    if not bomb or not bomb.Parent or not bombBody or not bombBody.Parent then
+        exitFPV(false); return
+    end
+
+    local now = tick()
+    if (now - lastOwnerTick) > 0.3 then
+        lastOwnerTick = now
+        pcall(function() bombBody:SetNetworkOwner(LP) end)
+    end
+
+    local curPos = bombBody.Position
+    local targetSpeed = CFG.Speed
+
+    if isLaunching then
+        if now >= launchEndTime then
+            isLaunching = false
+        else
+            targetSpeed = CFG.Speed * 0.85
+        end
+    end
+
+    if lockedTarget and not isLaunching then
+        local char = lockedTarget.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        if not char or not hum or hum.Health <= 0 or not hrp then
+            lockedTarget = nil
+            persistentTarget = nil
+            orbitActive = false
+        else
+            if orbitActive then
+                targetSpeed = math.min(CFG.MaxSpeed, CFG.Speed)
+                orbitAngle = orbitAngle + dt * (CFG.OrbitSpeed / CFG.OrbitRadius)
+                local offset = Vector3.new(math.cos(orbitAngle) * CFG.OrbitRadius, 18, math.sin(orbitAngle) * CFG.OrbitRadius)
+                local orbitDest = hrp.Position + offset
+                local delta = orbitDest - curPos
+                if delta.Magnitude > 0.2 then
+                    local toOrbit = delta.Unit
+                    local desYaw   = math.deg(math.atan2(-toOrbit.X, -toOrbit.Z))
+                    local desPitch = math.deg(math.asin(math.clamp(toOrbit.Y, -1, 1)))
+                    local diffYaw = ((desYaw - yaw + 180) % 360) - 180
+                    local diffPitch = desPitch - pitch
+                    yaw = yaw + (diffYaw * math.min(1, dt * 18))
+                    pitch = math.clamp(pitch + (diffPitch * math.min(1, dt * 18)), -CFG.PitchLimit, CFG.PitchLimit)
+                end
+            else
+                targetSpeed = math.min(CFG.MaxSpeed, math.max(CFG.Speed * 1.5, CFG.TerminalSpeed))
+                local dist = (hrp.Position - curPos).Magnitude
+                local leadTime = math.clamp(dist / math.max(currentSpeed, 120), 0, CFG.MaxLeadTime)
+                local targetVel = hrp.AssemblyLinearVelocity or Vector3.zero
+                local aimPoint = (hrp.Position + Vector3.new(0, 0.4, 0)) + (targetVel * leadTime)
+
+                local delta = aimPoint - curPos
+                if delta.Magnitude > 0.2 then
+                    local toTarget = delta.Unit
+                    local desYaw   = math.deg(math.atan2(-toTarget.X, -toTarget.Z))
+                    local desPitch = math.deg(math.asin(math.clamp(toTarget.Y, -1, 1)))
+
+                    local diffYaw = ((desYaw - yaw + 180) % 360) - 180
+                    local diffPitch = desPitch - pitch
+
+                    local turnPower = math.min(1, dt * CFG.GuideGain)
+                    yaw = yaw + (diffYaw * turnPower)
+                    pitch = math.clamp(pitch + (diffPitch * turnPower), -CFG.PitchLimit, CFG.PitchLimit)
+                end
+            end
+        end
+    end
+
+    if now < dashEndTime then
+        targetSpeed = math.min(CFG.MaxSpeed, CFG.Speed + CFG.BoostDash)
+        boostActive = true
+    else
+        boostActive = (lockedTarget ~= nil and not orbitActive)
+    end
+
+    if currentSpeed < targetSpeed then
+        currentSpeed = math.min(targetSpeed, currentSpeed + CFG.LinearAccel * dt)
+    else
+        currentSpeed = math.max(targetSpeed, currentSpeed - CFG.LinearDecel * dt)
+    end
+
+    local yawDelta = ((yaw - lastYaw + 180) % 360) - 180
+    lastYaw = yaw
+    local instantTurn = yawDelta / math.max(dt, 0.001)
+    smoothedTurnRate = smoothedTurnRate + (instantTurn - smoothedTurnRate) * math.min(1, dt * 10)
+    local goalRoll = math.clamp(smoothedTurnRate * CFG.BankFactor, -CFG.MaxBankAngle, CFG.MaxBankAngle)
+    currentRoll = currentRoll + (goalRoll - currentRoll) * math.min(1, dt * CFG.AngularDamp)
+
+    local baseRot = CFrame.Angles(0, math.rad(yaw), 0) * CFrame.Angles(math.rad(pitch), 0, 0)
+    local dir = baseRot.LookVector
+    local upVec = baseRot.UpVector
+    local rightVec = baseRot.RightVector
+    local rolledUp = (upVec * math.cos(math.rad(currentRoll))) + (rightVec * math.sin(math.rad(currentRoll)))
+    local orientedCF = CFrame.fromMatrix(curPos, dir, rolledUp)
+
+    if isLaunching then
+        bv.Velocity = Vector3.new(0, CFG.LaunchUpSpeed, 0) + (dir * (currentSpeed * 0.4))
+    else
+        local bob = Vector3.new(0, math.sin(now * 8) * CFG.HoverBobble, 0)
+        bv.Velocity = (dir * currentSpeed) + bob
+    end
+    bg.CFrame = orientedCF
+
+    local speedRatio = math.clamp(currentSpeed / CFG.MaxSpeed, 0, 1)
+    local baseCamFOV = (CFG.CamMode == "FPV") and (CFG.FOV_FPV_Base + (CFG.FOV_FPV_Max - CFG.FOV_FPV_Base) * speedRatio) or CFG.FOV_TPV
+    local wantFOV = baseCamFOV / zoomLevel
+    camera.FieldOfView = camera.FieldOfView + (wantFOV - camera.FieldOfView) * math.min(1, dt * 8)
+
+    local shakeAmt = speedRatio * CFG.ShakeIntensity
+    shakeX = (math.random() - 0.5) * shakeAmt
+    shakeY = (math.random() - 0.5) * shakeAmt
+
+    local pitchCamOffset = math.clamp(pitch * 0.02, -0.4, 0.4)
+    if CFG.CamMode == "FPV" then
+        local camPos = curPos + dir * CFG.CamNoseOffset
+        local targetCF = CFrame.new(camPos, camPos + dir)
+        camera.CFrame = targetCF * CFrame.Angles(shakeY * 0.02 + pitchCamOffset, shakeX * 0.02, math.rad(-currentRoll * 0.45))
+    else
+        local camPos = curPos - dir * CFG.CamBack_TPV + rolledUp * CFG.CamUp_TPV
+        camera.CFrame = CFrame.new(camPos, curPos + dir * 30)
+    end
+
+    updateESP()
+
+    sharedRayParams.FilterDescendantsInstances = {bomb, LP.Character}
+    local centerColor = CFG.ThemeColor
+    local aimHit = workspace:Raycast(camera.CFrame.Position, camera.CFrame.LookVector * 500, sharedRayParams)
+    if aimHit and aimHit.Instance then
+        local targetModel = aimHit.Instance:FindFirstAncestorOfClass("Model")
+        local playerFound = targetModel and Players:GetPlayerFromCharacter(targetModel)
+        if playerFound and playerFound ~= LP then centerColor = CFG.AlertColor end
+    end
+    if lockedTarget then centerColor = orbitActive and CFG.OrbitColor or CFG.LockColor end
+
+    local bracketScale = lockedTarget and 28 or 24
+    if ui.crosshairFrame then
+        ui.crosshairFrame.Size = ui.crosshairFrame.Size:Lerp(UDim2.new(0, bracketScale*2, 0, bracketScale*2), dt * 10)
+    end
+
+    if ui.reticleBracket then
+        for _, b in ipairs(ui.reticleBracket) do b.BackgroundColor3 = centerColor end
+    end
+    if ui.centerDot then ui.centerDot.BackgroundColor3 = centerColor end
+
+    if ui.fpmPip and bv then
+        local actualVel = bv.Velocity
+        if actualVel.Magnitude > 10 then
+            local sp, onScreen = camera:WorldToViewportPoint(curPos + actualVel.Unit * 30)
+            if onScreen then
+                ui.fpmPip.Visible = true
+                ui.fpmPip.Position = UDim2.new(0, sp.X - 5, 0, sp.Y - 5)
+            else
+                ui.fpmPip.Visible = false
+            end
+        else
+            ui.fpmPip.Visible = false
+        end
+    end
+
+    local fwdRay = workspace:Raycast(curPos, dir * 35, sharedRayParams)
+    if fwdRay and (now - lastWarnSound > 0.25) and not isLaunching then
+        lastWarnSound = now
+        playSystemSound("electronicpingshort.wav", 2.2)
+    end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and plr.Character then
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            if hum then
+                local last = lastKnownHealth[plr]
+                if last and last > 0 and hum.Health <= 0 then
+                    if bombBody and (plr.Character:GetPivot().Position - bombBody.Position).Magnitude < 120 then
+                        killCount = killCount + 1
+                        playSystemSound("bell.wav", 1.2)
+                    end
+                end
+                lastKnownHealth[plr] = hum.Health
+            end
+        end
+    end
+
+    if lastPos and not isLaunching then
+        local seg = curPos - lastPos
+        if seg.Magnitude > 0.05 then
+            local hit = workspace:Raycast(lastPos, seg, sharedRayParams)
+            if hit then
+                exitFPV(true)
+                return
+            end
+        end
+    end
+    lastPos = curPos
+
+    if ui.horizonLine then
+        ui.horizonLine.Rotation = -currentRoll
+        ui.horizonLine.Position = UDim2.new(0.5, 0, 0.5, math.clamp(pitch * 1.5, -90, 90))
+    end
+
+    if ui.compassLbl then
+        local normYaw = (math.floor(-yaw) % 360 + 360) % 360
+        local heading = "N"
+        if normYaw >= 338 or normYaw < 23 then heading = "N"
+        elseif normYaw >= 23 and normYaw < 68 then heading = "NE"
+        elseif normYaw >= 68 and normYaw < 113 then heading = "E"
+        elseif normYaw >= 113 and normYaw < 158 then heading = "SE"
+        elseif normYaw >= 158 and normYaw < 203 then heading = "S"
+        elseif normYaw >= 203 and normYaw < 248 then heading = "SW"
+        elseif normYaw >= 248 and normYaw < 293 then heading = "W"
+        elseif normYaw >= 293 and normYaw < 338 then heading = "NW" end
+        ui.compassLbl.Text = string.format("[%s %03d°]", heading, normYaw)
+    end
+
+    if ui.hudTelemetry then
+        local bat = math.max(11.4, 16.8 - ((tick() - flightStartTime) * 0.03))
+        local targetText = "SEARCHING"
+        if isLaunching then
+            targetText = "CATAPULT LAUNCH"
+        elseif orbitActive and lockedTarget then
+            targetText = "ORBIT RECON // " .. string.upper(lockedTarget.Name)
+        elseif lockedTarget then
+            targetText = "TERMINAL LOCK // " .. string.upper(lockedTarget.Name)
+        end
+        ui.hudTelemetry.Text = string.format("SPD %04d | ALT %03d | BAT %.1fV | %s | MAG: %dX | KILLS: %d", math.floor(currentSpeed), math.floor(curPos.Y), bat, targetText, zoomLevel, killCount)
+        ui.hudTelemetry.TextColor3 = lockedTarget and (orbitActive and CFG.OrbitColor or CFG.LockColor) or CFG.ThemeColor
+    end
+end))
+
+addConn(LP.CharacterAdded:Connect(function() if active then exitFPV(false) end end))
+
+local function shutdown()
+    exitFPV(false)
+    for _, c in ipairs(CONNECTIONS) do pcall(function() c:Disconnect() end) end
+    CONNECTIONS = {}
+    if sg then pcall(function() sg:Destroy() end); sg = nil end
+    local lo = PG:FindFirstChild("VANTA_Drone")
+    if lo then pcall(function() lo:Destroy() end) end
+    if colorCorrection then colorCorrection:Destroy() end
+    for _, s in pairs(soundCache) do pcall(function() s:Destroy() end) end
+    soundCache = {}
+    _G.VANTA_DRONE_SHUTDOWN = nil
+end
+_G.VANTA_DRONE_SHUTDOWN = shutdown
+
+local old = PG:FindFirstChild("VANTA_Drone")
+if old then old:Destroy() end
+
+sg = Instance.new("ScreenGui")
+sg.Name = "VANTA_Drone"
+sg.ResetOnSpawn = false
+sg.IgnoreGuiInset = true
+sg.DisplayOrder = 999
+sg.Enabled = false
+sg.Parent = PG
+
+ui.impactFlash = Instance.new("Frame", sg)
+ui.impactFlash.Size = UDim2.new(1, 0, 1, 0)
+ui.impactFlash.BackgroundColor3 = Color3.fromRGB(255, 30, 30)
+ui.impactFlash.BackgroundTransparency = 0.35
+ui.impactFlash.Visible = false
+ui.impactFlash.ZIndex = 600
+
+ui.hudContainer = Instance.new("Frame", sg)
+ui.hudContainer.Size = UDim2.new(1, 0, 1, 0)
+ui.hudContainer.BackgroundTransparency = 1
+ui.hudContainer.Visible = false
+
+ui.topExitBtn = Instance.new("TextButton", ui.hudContainer)
+ui.topExitBtn.Size = UDim2.new(0, 48, 0, 48)
+ui.topExitBtn.Position = UDim2.new(1, -65, 0, 30)
+ui.topExitBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
+ui.topExitBtn.BackgroundTransparency = 0.15
+ui.topExitBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.topExitBtn.Font = Enum.Font.GothamBold
+ui.topExitBtn.TextSize = 22
+ui.topExitBtn.Text = "✕"
+ui.topExitBtn.ZIndex = 50
+Instance.new("UICorner", ui.topExitBtn).CornerRadius = UDim.new(0, 12)
+local topExitStroke = Instance.new("UIStroke", ui.topExitBtn)
+topExitStroke.Color = Color3.fromRGB(255, 80, 80)
+topExitStroke.Thickness = 1.5
+
+ui.topExitBtn.MouseButton1Click:Connect(function()
+    exitFPV(false)
 end)
-end    
-})
 
+ui.horizonLine = Instance.new("Frame", ui.hudContainer)
+ui.horizonLine.Size = UDim2.new(0, 180, 0, 2)
+ui.horizonLine.AnchorPoint = Vector2.new(0.5, 0.5)
+ui.horizonLine.Position = UDim2.new(0.5, 0, 0.5, 0)
+ui.horizonLine.BackgroundColor3 = CFG.ThemeColor
+ui.horizonLine.BackgroundTransparency = 0.65
+ui.horizonLine.BorderSizePixel = 0
 
+ui.crosshairFrame = Instance.new("Frame", ui.hudContainer)
+ui.crosshairFrame.Size = UDim2.new(0, 48, 0, 48)
+ui.crosshairFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+ui.crosshairFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+ui.crosshairFrame.BackgroundTransparency = 1
 
-local Section = Tab:AddSection({
-	Name = "سكربتات مفيده⭐"
-})
-
-
-Tab:AddButton({
-	Name = "⭐Fly⭐",
-	Callback = function()
-loadstring(game:HttpGet("https://rawscripts.net/raw/Universal-Script-Fly-v3-7412"))()
-  	end    
-})
-
-Tab:AddButton({
-	Name = "💯Fling💯",
-	Callback = function()
-loadstring(game:HttpGet("https://raw.githubusercontent.com/0Ben1/fe./main/Fling%20GUI"))()
+ui.reticleBracket = {}
+local function makeBracket(rot, x, y)
+    local f = Instance.new("Frame", ui.crosshairFrame)
+    f.Size = UDim2.new(0, 9, 0, 2)
+    f.Position = UDim2.new(0.5, x, 0.5, y)
+    f.BackgroundColor3 = CFG.ThemeColor
+    f.BorderSizePixel = 0
+    f.Rotation = rot
+    table.insert(ui.reticleBracket, f)
 end
-})
+makeBracket(0, -18, -18); makeBracket(90, -22, -14)
+makeBracket(0, 10, -18);  makeBracket(90, 14, -14)
+makeBracket(0, -18, 18);  makeBracket(90, -22, 14)
+makeBracket(0, 10, 18);   makeBracket(90, 14, 14)
 
-Tab:AddButton({
-	Name = "🔥رحمهV1🔥",
-	Callback = function()
-loadstring(game:HttpGet("https://raw.githubusercontent.com/n0kc/AtomicHub/main/Map-Al-Biout.lua"))()
-  	end    
-})
+ui.centerDot = Instance.new("Frame", ui.crosshairFrame)
+ui.centerDot.Size = UDim2.new(0, 4, 0, 4)
+ui.centerDot.Position = UDim2.new(0.5, -2, 0.5, -2)
+ui.centerDot.BackgroundColor3 = CFG.ThemeColor
+Instance.new("UICorner", ui.centerDot).CornerRadius = UDim.new(1, 0)
 
-Tab:AddButton({
-	Name = "🔥رحمهV2🔥",
-	Callback = function()
-loadstring(game:HttpGet("https://raw.githubusercontent.com/VR7ss/OMK/main/VR7%20RAGDOLL"))()
-  	end    
-})
+ui.fpmPip = Instance.new("Frame", ui.hudContainer)
+ui.fpmPip.Size = UDim2.new(0, 10, 0, 10)
+ui.fpmPip.BackgroundTransparency = 1
+ui.fpmPip.Visible = false
+local fpmStroke = Instance.new("UIStroke", ui.fpmPip)
+fpmStroke.Color = Color3.fromRGB(255, 230, 80)
+fpmStroke.Thickness = 1.2
+Instance.new("UICorner", ui.fpmPip).CornerRadius = UDim.new(1, 0)
 
-Tab:AddButton({
-	Name = "✨هاكREDZ✨",
-	Callback = function()
-loadstring(game:HttpGet("https://raw.githubusercontent.com/REDzHUB/REDzHUB/main/REDzHUB"))()
-  	end    
-})
+ui.hudTelemetry = Instance.new("TextLabel", ui.hudContainer)
+ui.hudTelemetry.Size = UDim2.new(0, 520, 0, 26)
+ui.hudTelemetry.Position = UDim2.new(0.5, -260, 0, 30)
+ui.hudTelemetry.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+ui.hudTelemetry.BackgroundTransparency = 0.35
+ui.hudTelemetry.TextColor3 = CFG.ThemeColor
+ui.hudTelemetry.Font = Enum.Font.Code
+ui.hudTelemetry.TextSize = 12
+ui.hudTelemetry.Text = "SYSTEM ONLINE"
+Instance.new("UICorner", ui.hudTelemetry).CornerRadius = UDim.new(0, 6)
+local strokeTop = Instance.new("UIStroke", ui.hudTelemetry)
+strokeTop.Color = CFG.ThemeColor
+strokeTop.Thickness = 1.2
+strokeTop.Transparency = 0.5
 
-Tab:AddButton({
-	Name = "✨Admin✨️",
-	Callback = function()
-loadstring(game:HttpGet(('https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source'),true))()
-  	end    
-})
+ui.compassLbl = Instance.new("TextLabel", ui.hudContainer)
+ui.compassLbl.Size = UDim2.new(0, 140, 0, 20)
+ui.compassLbl.Position = UDim2.new(0.5, -70, 0, 58)
+ui.compassLbl.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+ui.compassLbl.BackgroundTransparency = 0.5
+ui.compassLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.compassLbl.Font = Enum.Font.Code
+ui.compassLbl.TextSize = 11
+ui.compassLbl.Text = "[N 000°]"
+Instance.new("UICorner", ui.compassLbl).CornerRadius = UDim.new(0, 4)
 
-------
+ui.quickBtn = Instance.new("TextButton", sg)
+ui.quickBtn.Size = UDim2.new(0, 85, 0, 85)
+ui.quickBtn.Position = UDim2.new(0, 25, 0.5, -42)
+ui.quickBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 40)
+ui.quickBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.quickBtn.Text = "🚀\nDRONE"
+ui.quickBtn.Font = Enum.Font.GothamBold
+ui.quickBtn.TextSize = 14
+Instance.new("UICorner", ui.quickBtn).CornerRadius = UDim.new(0, 16)
+local qbStroke = Instance.new("UIStroke", ui.quickBtn)
+qbStroke.Color = Color3.fromRGB(255, 90, 90)
+qbStroke.Thickness = 2
 
-Tab2:AddButton({
-	Name = "🔥Fling🔥",
-	Callback = function()
-loadstring(game:HttpGet("https://raw.githubusercontent.com/0Ben1/fe./main/Fling%20GUI"))()
+ui.quickBtn.MouseButton1Click:Connect(function()
+    if active then return end
+    ui.quickBtn.Text = "⏳\n..."
+    task.spawn(function()
+        quickSpawnAndGrab()
+        task.wait(2)
+        if not active then ui.quickBtn.Text = "🚀\nDRONE" end
+    end)
+end)
+
+local function createButton(pos, size, color, text, txtSize)
+    local b = Instance.new("TextButton", sg)
+    b.Size = size; b.Position = pos
+    b.BackgroundColor3 = color
+    b.BackgroundTransparency = 0.25
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = txtSize or 16
+    b.Text = text
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 10)
+    local s = Instance.new("UIStroke", b)
+    s.Color = Color3.fromRGB(80, 90, 100)
+    s.Thickness = 1
+    return b
 end
-})
 
+local btnSz = 48
+local gap = 6
 
-Tab2:AddButton({
-	Name = "⭐Fling++⭐",
-	Callback = function()
-loadstring("\108\111\97\100\115\116\114\105\110\103\40\103\97\109\101\58\72\116\116\112\71\101\116\40\34\104\116\116\112\115\58\47\47\114\97\119\46\103\105\116\104\117\98\117\115\101\114\99\111\110\116\101\110\116\46\99\111\109\47\65\99\117\114\97\88\48\52\57\47\111\98\102\117\115\99\97\116\101\100\83\99\114\105\112\116\115\47\109\97\105\110\47\75\105\108\108\71\117\105\34\41\41\40\41\10")()
-  	end    
-})
+local plusBtn  = createButton(UDim2.new(0, 20, 1, -25 - btnSz*4 - gap*3), UDim2.new(0, btnSz, 0, btnSz), Color3.fromRGB(25, 130, 75), "+", 22)
+
+ui.speedLbl = Instance.new("TextButton", sg)
+ui.speedLbl.Size = UDim2.new(0, btnSz, 0, btnSz)
+ui.speedLbl.Position = UDim2.new(0, 20, 1, -25 - btnSz*3 - gap*2)
+ui.speedLbl.BackgroundColor3 = Color3.fromRGB(15, 17, 22)
+ui.speedLbl.BackgroundTransparency = 0.2
+ui.speedLbl.Text = tostring(CFG.Speed)
+ui.speedLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.speedLbl.Font = Enum.Font.GothamBold
+ui.speedLbl.TextSize = 14
+Instance.new("UICorner", ui.speedLbl).CornerRadius = UDim.new(0, 10)
+local spStroke = Instance.new("UIStroke", ui.speedLbl)
+spStroke.Color = CFG.ThemeColor; spStroke.Thickness = 1.2
+
+local minusBtn = createButton(UDim2.new(0, 20, 1, -25 - btnSz*2 - gap), UDim2.new(0, btnSz, 0, btnSz), Color3.fromRGB(140, 35, 35), "−", 22)
+local dashBtn  = createButton(UDim2.new(0, 20, 1, -25 - btnSz),       UDim2.new(0, btnSz, 0, btnSz), Color3.fromRGB(190, 100, 20), "⚡", 18)
+
+local detonateBtn = createButton(UDim2.new(1, -20 - btnSz*2 - gap, 1, -25 - btnSz*3 - gap*2), UDim2.new(0, btnSz, 0, btnSz), Color3.fromRGB(190, 30, 30), "💥", 18)
+local orbitBtn    = createButton(UDim2.new(1, -20 - btnSz*2 - gap, 1, -25 - btnSz*2 - gap),   UDim2.new(0, btnSz, 0, btnSz), Color3.fromRGB(20, 120, 180), "🔄", 16)
+local cycleBtn    = createButton(UDim2.new(1, -20 - btnSz*2 - gap, 1, -25 - btnSz),           UDim2.new(0, btnSz, 0, btnSz), Color3.fromRGB(160, 60, 160), "🎯", 16)
+
+local zoomBtn  = createButton(UDim2.new(1, -20 - btnSz, 1, -25 - btnSz*4 - gap*3), UDim2.new(0, btnSz, 0, btnSz), Color3.fromRGB(50, 100, 130), "1X", 13)
+local camBtn   = createButton(UDim2.new(1, -20 - btnSz, 1, -25 - btnSz*3 - gap*2), UDim2.new(0, btnSz, 0, btnSz), Color3.fromRGB(45, 75, 130), CFG.CamMode, 11)
+local nvgBtn   = createButton(UDim2.new(1, -20 - btnSz, 1, -25 - btnSz*2 - gap),   UDim2.new(0, btnSz, 0, btnSz), Color3.fromRGB(30, 110, 80), "FLIR", 11)
+local exitBtn  = createButton(UDim2.new(1, -20 - btnSz, 1, -25 - btnSz),           UDim2.new(0, btnSz, 0, btnSz), Color3.fromRGB(120, 25, 25), "✕", 20)
+
+plusBtn.MouseButton1Down:Connect(function()
+    holdingPlus = true
+    CFG.Speed = math.min(CFG.MaxSpeed, CFG.Speed + CFG.SpeedStep)
+    ui.speedLbl.Text = tostring(math.floor(CFG.Speed))
+    playSystemSound("button.wav", 1.2)
+end)
+plusBtn.MouseButton1Up:Connect(function() holdingPlus = false end)
+
+minusBtn.MouseButton1Down:Connect(function()
+    holdingMinus = true
+    CFG.Speed = math.max(CFG.MinSpeed, CFG.Speed - CFG.SpeedStep)
+    ui.speedLbl.Text = tostring(math.floor(CFG.Speed))
+    playSystemSound("button.wav", 0.9)
+end)
+minusBtn.MouseButton1Up:Connect(function() holdingMinus = false end)
+
+dashBtn.MouseButton1Click:Connect(function()
+    dashEndTime = tick() + CFG.BoostDashTime
+    playSystemSound("snap.wav", 1.4)
+end)
+
+zoomBtn.MouseButton1Click:Connect(function()
+    if zoomLevel == 1 then
+        zoomLevel = 2
+        zoomBtn.Text = "2X"
+    elseif zoomLevel == 2 then
+        zoomLevel = 4
+        zoomBtn.Text = "4X"
+    else
+        zoomLevel = 1
+        zoomBtn.Text = "1X"
+    end
+    playSystemSound("electronicpingshort.wav", 1.6)
+end)
+
+detonateBtn.MouseButton1Click:Connect(function()
+    if active then exitFPV(true) end
+end)
+
+orbitBtn.MouseButton1Click:Connect(function()
+    if not lockedTarget then return end
+    orbitActive = not orbitActive
+    if orbitActive then
+        orbitBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+        playSystemSound("electronicpingshort.wav", 1.4)
+    else
+        orbitBtn.BackgroundColor3 = Color3.fromRGB(20, 120, 180)
+        playSystemSound("button.wav", 0.8)
+    end
+end)
+
+cycleBtn.MouseButton1Click:Connect(function()
+    local playerList = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                table.insert(playerList, plr)
+            end
+        end
+    end
+
+    if #playerList == 0 then return end
+
+    local nextTarget = playerList[1]
+    if lockedTarget then
+        for i, plr in ipairs(playerList) do
+            if plr == lockedTarget then
+                nextTarget = playerList[(i % #playerList) + 1]
+                break
+            end
+        end
+    end
+
+    lockedTarget = nextTarget
+    persistentTarget = nextTarget
+    playSystemSound("electronicpingshort.wav", 1.6)
+end)
+
+camBtn.MouseButton1Click:Connect(function()
+    CFG.CamMode = (CFG.CamMode == "FPV") and "TPV" or "FPV"
+    camBtn.Text = CFG.CamMode
+    applyCamMode()
+    playSystemSound("button.wav", 1)
+end)
+
+colorCorrection = Instance.new("ColorCorrectionEffect", Lighting)
+colorCorrection.Enabled = false
+
+nvgBtn.MouseButton1Click:Connect(function()
+    thermalActive = not thermalActive
+    if thermalActive then
+        colorCorrection.TintColor = Color3.fromRGB(130, 255, 170)
+        colorCorrection.Contrast = 0.45
+        colorCorrection.Brightness = 0.15
+        colorCorrection.Enabled = true
+        nvgBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 110)
+        playSystemSound("electronicpingshort.wav", 1.6)
+    else
+        colorCorrection.Enabled = false
+        nvgBtn.BackgroundColor3 = Color3.fromRGB(30, 110, 80)
+        playSystemSound("button.wav", 0.8)
+    end
+end)
+
+exitBtn.MouseButton1Click:Connect(function()
+    exitFPV(false)
+end)
+
+ui.speedLbl.MouseButton1Click:Connect(function()
+    local tb = Instance.new("TextBox", sg)
+    tb.Size = ui.speedLbl.Size
+    tb.Position = ui.speedLbl.Position
+    tb.BackgroundColor3 = Color3.fromRGB(15, 17, 22)
+    tb.TextColor3 = Color3.fromRGB(255, 255, 255)
+    tb.Font = Enum.Font.GothamBold
+    tb.TextSize = 14
+    tb.Text = tostring(math.floor(CFG.Speed))
+    tb.ClearTextOnFocus = false
+    Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 10)
+    tb:CaptureFocus()
+    ui.speedLbl.Visible = false
+    tb.FocusLost:Connect(function()
+        local n = tonumber(tb.Text)
+        if n then
+            CFG.Speed = math.clamp(math.floor(n), CFG.MinSpeed, CFG.MaxSpeed)
+            ui.speedLbl.Text = tostring(CFG.Speed)
+        end
+        tb:Destroy()
+        ui.speedLbl.Visible = true
+    end)
+end)

@@ -1,0 +1,720 @@
+if _G.VANTA_SPY_SHUTDOWN then pcall(_G.VANTA_SPY_SHUTDOWN) end
+
+local Players      = game:GetService("Players")
+local RunService   = game:GetService("RunService")
+local UIS          = game:GetService("UserInputService")
+local LP           = Players.LocalPlayer
+local PG           = LP:WaitForChild("PlayerGui")
+
+local MAX_ROWS = 250
+
+local logs        = {}
+local order       = {}
+local favorites   = {}
+local blocked     = {}
+local pending     = {}
+local head        = 1
+local paused      = false
+local filterText  = ""
+local filterType  = "ALL"
+local activeTab   = "LOGS"
+local original    = nil
+local activeRec   = nil
+local autoFireTask= nil
+local autoFiring  = false
+local autoRate    = 10
+
+-- Blacklisted core remotes that slow down tools/physics
+local CoreBlacklist = {
+    ["ChatBarFocusNotification"] = true,
+    ["GetInitDataRequest"]       = true,
+    ["SayMessageRequest"]        = true,
+    ["ClientMessageNotification"]= true
+}
+
+-- ═══ Serializer & Helpers ═══
+local function serializeValue(v, depth)
+    depth = depth or 0
+    if depth > 3 then return "..." end
+    local t = typeof(v)
+    if t == "Instance" then
+        local ok, name = pcall(function() return v:GetFullName() end)
+        return ok and name or ("[" .. v.ClassName .. "]")
+    elseif t == "string" then
+        return '"' .. v:gsub('"', '\\"') .. '"'
+    elseif t == "Vector3" then
+        return string.format("Vector3.new(%.2f, %.2f, %.2f)", v.X, v.Y, v.Z)
+    elseif t == "CFrame" then
+        local p = v.Position
+        return string.format("CFrame.new(%.2f, %.2f, %.2f)", p.X, p.Y, p.Z)
+    elseif t == "table" then
+        local parts = {}
+        for k, val in pairs(v) do
+            local kStr = type(k) == "number" and "" or (tostring(k) .. " = ")
+            table.insert(parts, kStr .. serializeValue(val, depth + 1))
+        end
+        return "{" .. table.concat(parts, ", ") .. "}"
+    else
+        return tostring(v)
+    end
+end
+
+local function getDetailedTypes(packed)
+    if not packed then return "لا توجد أرجومنتات" end
+    local n = packed.n or #packed
+    if n == 0 then return "لا توجد أرجومنتات (Void)" end
+    local lines = {}
+    for i = 1, n do
+        local val = packed[i]
+        local tStr = typeof(val)
+        table.insert(lines, string.format("[%d] (%s): %s", i, tStr, serializeValue(val)))
+    end
+    return table.concat(lines, "\n")
+end
+
+local function parseArgsString(str)
+    if not str or str == "" or str == "nil" then return {} end
+    local fn = loadstring("return {" .. str .. "}")
+    if fn then
+        local ok, res = pcall(fn)
+        if ok and type(res) == "table" then return res end
+    end
+    return nil
+end
+
+local function generateAIPrompt(rec)
+    if not rec then return "" end
+    local argsFormatted = getDetailedTypes(rec.lastArgs)
+    local prompt = string.format([[
+[Roblox Remote Event Analysis Request]
+--------------------------------------------------
+Remote Path: %s
+Class Type: %s
+Invocation Method: %s
+Argument Count: %d
+
+Detailed Arguments Breakdown:
+%s
+
+--------------------------------------------------
+Task for AI:
+1. Explain what this RemoteEvent/RemoteFunction likely controls in the game based on its name and arguments.
+2. Identify any customizable parameters (e.g., coordinates, tool IDs, numbers).
+3. Write a clean Luau script to test or automate this remote safely.
+]], rec.path, rec.remote.ClassName, rec.method, rec.lastArgs and (rec.lastArgs.n or #rec.lastArgs) or 0, argsFormatted)
+    return prompt
+end
+
+local function generateExecutableCode(path, method, argsTable, loop)
+    local n = type(argsTable) == "table" and (#argsTable) or 0
+    local argsStr = {}
+    if type(argsTable) == "table" then
+        for i = 1, math.max(n, 1) do
+            if argsTable[i] ~= nil then
+                table.insert(argsStr, serializeValue(argsTable[i]))
+            end
+        end
+    end
+    local callStr = string.format("%s:%s(%s)", path, method, table.concat(argsStr, ", "))
+    if loop then
+        return string.format("task.spawn(function()\n    while true do\n        %s\n        task.wait(%.2f)\n    end\nend)", callStr, 1/autoRate)
+    end
+    return callStr
+end
+
+local function argsSummary(packed)
+    if not packed then return "" end
+    local n = packed.n or #packed
+    if n == 0 then return "" end
+    local out = {}
+    for i = 1, math.min(n, 5) do
+        table.insert(out, serializeValue(packed[i]))
+    end
+    return table.concat(out, ", ")
+end
+
+-- ═══ UI Setup ═══
+local old = PG:FindFirstChild("VANTA_Spy_v8")
+if old then old:Destroy() end
+
+local sg = Instance.new("ScreenGui")
+sg.Name = "VANTA_Spy_v8"; sg.ResetOnSpawn = false
+sg.IgnoreGuiInset = true; sg.DisplayOrder = 999; sg.Parent = PG
+
+-- Floating Icon
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(0, 44, 0, 44); toggleBtn.Position = UDim2.new(0, 10, 0.35, 0)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(18, 18, 26); toggleBtn.Text = "◈"
+toggleBtn.TextColor3 = Color3.fromRGB(0, 255, 170); toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 20; toggleBtn.Active = true; toggleBtn.Parent = sg
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(1, 0)
+local tStk = Instance.new("UIStroke", toggleBtn)
+tStk.Color = Color3.fromRGB(0, 255, 170); tStk.Thickness = 1.5
+
+-- Main Compact Window
+local root = Instance.new("Frame")
+root.Size = UDim2.new(0, 310, 0, 265)
+root.Position = UDim2.new(0.5, -155, 0.5, -132)
+root.BackgroundColor3 = Color3.fromRGB(12, 12, 16); root.BorderSizePixel = 0
+root.Active = true; root.Parent = sg
+Instance.new("UICorner", root).CornerRadius = UDim.new(0, 10)
+local rootStroke = Instance.new("UIStroke", root)
+rootStroke.Color = Color3.fromRGB(0, 255, 170); rootStroke.Thickness = 1.2
+
+-- Header
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 30); titleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+titleBar.BorderSizePixel = 0; titleBar.Parent = root
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -60, 1, 0); title.Position = UDim2.new(0, 10, 0, 0)
+title.BackgroundTransparency = 1; title.Text = "◈ VANTA SPY v8 (AI Edition)"
+title.TextColor3 = Color3.fromRGB(240, 240, 245); title.Font = Enum.Font.GothamBold
+title.TextSize = 11; title.TextXAlignment = Enum.TextXAlignment.Left; title.Parent = titleBar
+
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 25, 1, 0); minBtn.Position = UDim2.new(1, -52, 0, 0)
+minBtn.BackgroundTransparency = 1; minBtn.Text = "—"; minBtn.TextColor3 = Color3.fromRGB(200, 200, 210)
+minBtn.Font = Enum.Font.GothamBold; minBtn.TextSize = 13; minBtn.Parent = titleBar
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 25, 1, 0); closeBtn.Position = UDim2.new(1, -27, 0, 0)
+closeBtn.BackgroundTransparency = 1; closeBtn.Text = "✕"; closeBtn.TextColor3 = Color3.fromRGB(255, 75, 75)
+closeBtn.Font = Enum.Font.GothamBold; closeBtn.TextSize = 13; closeBtn.Parent = titleBar
+
+-- Tab Navigation
+local tabBar = Instance.new("Frame")
+tabBar.Size = UDim2.new(1, -12, 0, 24); tabBar.Position = UDim2.new(0, 6, 0, 34)
+tabBar.BackgroundTransparency = 1; tabBar.Parent = root
+
+local function mkTabBtn(x, w, text)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(w, -2, 1, 0); b.Position = UDim2.new(x, 1, 0, 0)
+    b.BackgroundColor3 = Color3.fromRGB(22, 22, 30); b.Text = text
+    b.TextColor3 = Color3.fromRGB(160, 160, 175); b.Font = Enum.Font.GothamBold
+    b.TextSize = 10; b.BorderSizePixel = 0; b.Parent = tabBar
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+    return b
+end
+
+local tabLogs = mkTabBtn(0, 0.33, "📜 السجل")
+local tabFavs = mkTabBtn(0.33, 0.33, "⭐ المفضلة")
+local tabInsp = mkTabBtn(0.66, 0.34, "🔍 التحكّم")
+tabLogs.TextColor3 = Color3.fromRGB(0, 255, 170)
+
+-- Toast Notification
+local toast = Instance.new("TextLabel")
+toast.Size = UDim2.new(0, 190, 0, 26); toast.Position = UDim2.new(0.5, -95, 0.82, 0)
+toast.BackgroundColor3 = Color3.fromRGB(22, 22, 30); toast.BackgroundTransparency = 0.1
+toast.TextColor3 = Color3.fromRGB(0, 255, 170); toast.Font = Enum.Font.GothamBold
+toast.TextSize = 10; toast.Visible = false; toast.ZIndex = 30; toast.Parent = sg
+Instance.new("UICorner", toast).CornerRadius = UDim.new(0, 6)
+local toastStroke = Instance.new("UIStroke", toast)
+toastStroke.Color = Color3.fromRGB(0, 255, 170); toastStroke.Thickness = 1
+
+local toastToken = 0
+local function say(msg)
+    toastToken = toastToken + 1
+    local myToken = toastToken
+    toast.Text = msg; toast.Visible = true
+    task.delay(1.3, function()
+        if myToken == toastToken then toast.Visible = false end
+    end)
+end
+
+-- ═══ LOGS TAB CONTAINER ═══
+local logsContainer = Instance.new("Frame")
+logsContainer.Size = UDim2.new(1, -12, 1, -92); logsContainer.Position = UDim2.new(0, 6, 0, 62)
+logsContainer.BackgroundTransparency = 1; logsContainer.Parent = root
+
+local filterBox = Instance.new("TextBox")
+filterBox.Size = UDim2.new(0.65, 0, 0, 22); filterBox.Position = UDim2.new(0, 0, 0, 0)
+filterBox.BackgroundColor3 = Color3.fromRGB(20, 20, 28); filterBox.TextColor3 = Color3.fromRGB(235, 235, 240)
+filterBox.PlaceholderText = "🔍 بحث عن ريموت..."; filterBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 135)
+filterBox.Font = Enum.Font.Code; filterBox.TextSize = 10; filterBox.Text = ""
+filterBox.ClearTextOnFocus = false; filterBox.BorderSizePixel = 0; filterBox.Parent = logsContainer
+Instance.new("UICorner", filterBox).CornerRadius = UDim.new(0, 5)
+
+local typeBtn = Instance.new("TextButton")
+typeBtn.Size = UDim2.new(0.33, 0, 0, 22); typeBtn.Position = UDim2.new(0.67, 0, 0, 0)
+typeBtn.BackgroundColor3 = Color3.fromRGB(28, 28, 38); typeBtn.Text = "الكل (ALL)"
+typeBtn.TextColor3 = Color3.fromRGB(0, 255, 170); typeBtn.Font = Enum.Font.GothamBold
+typeBtn.TextSize = 9; typeBtn.BorderSizePixel = 0; typeBtn.Parent = logsContainer
+Instance.new("UICorner", typeBtn).CornerRadius = UDim.new(0, 5)
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1, 0, 1, -26); scroll.Position = UDim2.new(0, 0, 0, 26)
+scroll.BackgroundTransparency = 1; scroll.BorderSizePixel = 0; scroll.ScrollBarThickness = 3
+scroll.CanvasSize = UDim2.new(0, 0, 0, 0); scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.Parent = logsContainer
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, 3); listLayout.Parent = scroll
+
+-- ═══ INSPECTOR TAB CONTAINER ═══
+local inspectorContainer = Instance.new("Frame")
+inspectorContainer.Size = UDim2.new(1, -12, 1, -66); inspectorContainer.Position = UDim2.new(0, 6, 0, 62)
+inspectorContainer.BackgroundTransparency = 1; inspectorContainer.Visible = false; inspectorContainer.Parent = root
+
+local inspScroll = Instance.new("ScrollingFrame")
+inspScroll.Size = UDim2.new(1, 0, 1, 0); inspScroll.BackgroundTransparency = 1
+inspScroll.BorderSizePixel = 0; inspScroll.ScrollBarThickness = 3
+inspScroll.CanvasSize = UDim2.new(0, 0, 0, 0); inspScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+inspScroll.Parent = inspectorContainer
+local inspLayout = Instance.new("UIListLayout")
+inspLayout.Padding = UDim.new(0, 4); inspLayout.Parent = inspScroll
+
+local pathLbl = Instance.new("TextBox")
+pathLbl.Size = UDim2.new(1, 0, 0, 30); pathLbl.BackgroundColor3 = Color3.fromRGB(18, 18, 25)
+pathLbl.TextColor3 = Color3.fromRGB(220, 220, 230); pathLbl.Font = Enum.Font.Code
+pathLbl.TextSize = 9; pathLbl.TextWrapped = true; pathLbl.ClearTextOnFocus = false
+pathLbl.TextEditable = false; pathLbl.Text = "اختر ريموت أولاً من السجل..."
+pathLbl.Parent = inspScroll
+Instance.new("UICorner", pathLbl).CornerRadius = UDim.new(0, 5)
+
+local editTitle = Instance.new("TextLabel")
+editTitle.Size = UDim2.new(1, 0, 0, 14); editTitle.BackgroundTransparency = 1
+editTitle.Text = "✏️ القيم الحالية (تعديل الأرجومنتات):"; editTitle.TextColor3 = Color3.fromRGB(140, 140, 160)
+editTitle.Font = Enum.Font.GothamBold; editTitle.TextSize = 9; editTitle.TextXAlignment = Enum.TextXAlignment.Left
+editTitle.Parent = inspScroll
+
+local payloadBox = Instance.new("TextBox")
+payloadBox.Size = UDim2.new(1, 0, 0, 36); payloadBox.BackgroundColor3 = Color3.fromRGB(18, 18, 25)
+payloadBox.TextColor3 = Color3.fromRGB(0, 255, 170); payloadBox.Font = Enum.Font.Code
+payloadBox.TextSize = 9; payloadBox.TextWrapped = true; payloadBox.ClearTextOnFocus = false
+payloadBox.Text = ""; payloadBox.PlaceholderText = "مثال: 100, 'Gold', true"
+payloadBox.Parent = inspScroll
+Instance.new("UICorner", payloadBox).CornerRadius = UDim.new(0, 5)
+
+-- Auto Fire Rate Controls
+local rateFrame = Instance.new("Frame")
+rateFrame.Size = UDim2.new(1, 0, 0, 20); rateFrame.BackgroundTransparency = 1; rateFrame.Parent = inspScroll
+
+local rateLbl = Instance.new("TextLabel")
+rateLbl.Size = UDim2.new(0.5, 0, 1, 0); rateLbl.BackgroundTransparency = 1
+rateLbl.Text = "⚡ السرعة: 10 / ثانية"; rateLbl.TextColor3 = Color3.fromRGB(200, 200, 210)
+rateLbl.Font = Enum.Font.GothamBold; rateLbl.TextSize = 9; rateLbl.TextXAlignment = Enum.TextXAlignment.Left
+rateLbl.Parent = rateFrame
+
+local rateUp = Instance.new("TextButton")
+rateUp.Size = UDim2.new(0.22, 0, 1, 0); rateUp.Position = UDim2.new(0.52, 0, 0, 0)
+rateUp.BackgroundColor3 = Color3.fromRGB(28, 28, 38); rateUp.Text = "+10"
+rateUp.TextColor3 = Color3.fromRGB(0, 255, 170); rateUp.Font = Enum.Font.GothamBold
+rateUp.TextSize = 9; rateUp.Parent = rateFrame
+Instance.new("UICorner", rateUp).CornerRadius = UDim.new(0, 4)
+
+local rateDown = Instance.new("TextButton")
+rateDown.Size = UDim2.new(0.22, 0, 1, 0); rateDown.Position = UDim2.new(0.76, 0, 0, 0)
+rateDown.BackgroundColor3 = Color3.fromRGB(28, 28, 38); rateDown.Text = "-5"
+rateDown.TextColor3 = Color3.fromRGB(255, 100, 100); rateDown.Font = Enum.Font.GothamBold
+rateDown.TextSize = 9; rateDown.Parent = rateFrame
+Instance.new("UICorner", rateDown).CornerRadius = UDim.new(0, 4)
+
+-- Grid Buttons inside Inspector
+local inspBtnGrid = Instance.new("Frame")
+inspBtnGrid.Size = UDim2.new(1, 0, 0, 92); inspBtnGrid.BackgroundTransparency = 1; inspBtnGrid.Parent = inspScroll
+
+local function createGridBtn(x, y, w, h, color, text, txtColor)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(w, -2, h, -2); b.Position = UDim2.new(x, 1, y, 1)
+    b.BackgroundColor3 = color; b.Text = text
+    b.TextColor3 = txtColor or Color3.fromRGB(255, 255, 255)
+    b.Font = Enum.Font.GothamBold; b.TextSize = 9
+    b.BorderSizePixel = 0; b.Parent = inspBtnGrid
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+    return b
+end
+
+local fireOnceBtn = createGridBtn(0, 0, 0.5, 0.25, Color3.fromRGB(0, 160, 110), "▶ إرسال مرة")
+local autoFireBtn = createGridBtn(0.5, 0, 0.5, 0.25, Color3.fromRGB(180, 40, 60), "⚡ تشغيل التكرار")
+local aiAnalyzeBtn= createGridBtn(0, 0.26, 1.0, 0.25, Color3.fromRGB(90, 40, 160), "🤖 نسخ تحليل للذكاء الاصطناعي")
+local favToggleBtn= createGridBtn(0, 0.52, 0.5, 0.24, Color3.fromRGB(40, 40, 55), "⭐ إضافة للمفضلة")
+local copyCodeBtn = createGridBtn(0.5, 0.52, 0.5, 0.24, Color3.fromRGB(40, 40, 55), "📋 نسخ الكود")
+local copyPathBtn = createGridBtn(0, 0.77, 0.5, 0.24, Color3.fromRGB(40, 40, 55), "📍 نسخ المسار")
+local blockBtn    = createGridBtn(0.5, 0.77, 0.5, 0.24, Color3.fromRGB(70, 30, 30), "🚫 حظر (Block)")
+
+-- Bottom Action Bar
+local bottomRow = Instance.new("Frame")
+bottomRow.Size = UDim2.new(1, -12, 0, 24); bottomRow.Position = UDim2.new(0, 6, 1, -28)
+bottomRow.BackgroundTransparency = 1; bottomRow.Parent = root
+
+local function mkBottomBtn(x, w, color, text, txtColor)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(w, -2, 1, 0); b.Position = UDim2.new(x, 1, 0, 0)
+    b.BackgroundColor3 = color; b.Text = text
+    b.TextColor3 = txtColor or Color3.fromRGB(255, 255, 255)
+    b.Font = Enum.Font.GothamBold; b.TextSize = 10
+    b.BorderSizePixel = 0; b.Parent = bottomRow
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+    return b
+end
+
+local copyAllBtn = mkBottomBtn(0, 0.33, Color3.fromRGB(180, 30, 45), "نسخ الكل")
+local clearBtn   = mkBottomBtn(0.33, 0.33, Color3.fromRGB(35, 35, 45), "مسح", Color3.fromRGB(200, 200, 210))
+local pauseBtn   = mkBottomBtn(0.66, 0.34, Color3.fromRGB(35, 35, 45), "إيقاف", Color3.fromRGB(120, 220, 140))
+
+-- ═══ Logic & Tab Switching ═══
+local function switchTab(tabName)
+    activeTab = tabName
+    tabLogs.TextColor3 = tabName == "LOGS" and Color3.fromRGB(0, 255, 170) or Color3.fromRGB(160, 160, 175)
+    tabFavs.TextColor3 = tabName == "FAVS" and Color3.fromRGB(0, 255, 170) or Color3.fromRGB(160, 160, 175)
+    tabInsp.TextColor3 = tabName == "INSP" and Color3.fromRGB(0, 255, 170) or Color3.fromRGB(160, 160, 175)
+
+    if tabName == "INSP" then
+        logsContainer.Visible = false
+        inspectorContainer.Visible = true
+    else
+        inspectorContainer.Visible = false
+        logsContainer.Visible = true
+        for _, p in ipairs(order) do
+            local rec = logs[p]
+            if rec and rec.row then
+                if tabName == "FAVS" then
+                    rec.row.Visible = favorites[p] == true
+                else
+                    rec.row.Visible = (not blocked[p]) and (filterType == "ALL" or (filterType == "EVENT" and rec.method == "FireServer") or (filterType == "FUNC" and rec.method == "InvokeServer")) and (filterText == "" or p:lower():find(filterText:lower(), 1, true) ~= nil)
+                end
+            end
+        end
+    end
+end
+
+tabLogs.MouseButton1Click:Connect(function() switchTab("LOGS") end)
+tabFavs.MouseButton1Click:Connect(function() switchTab("FAVS") end)
+tabInsp.MouseButton1Click:Connect(function() switchTab("INSP") end)
+
+local function openInspector(rec)
+    activeRec = rec
+    pathLbl.Text = rec.path
+    payloadBox.Text = argsSummary(rec.lastArgs)
+    favToggleBtn.Text = favorites[rec.path] and "⭐ في المفضلة" or "⭐ إضافة للمفضلة"
+    blockBtn.Text = blocked[rec.path] and "🟢 إلغاء الحظر" or "🚫 حظر (Block)"
+    switchTab("INSP")
+end
+
+local function addRow(path, remote, method, args)
+    if paused then return end
+    
+    local rec = logs[path]
+    if rec then
+        rec.count = rec.count + 1
+        rec.lastArgs = args
+        rec.lbl.Text = string.format("[%s] %s  ×%d", (method == "FireServer" and "EV" or "FN"), remote.Name, rec.count)
+        if activeRec == rec then
+            payloadBox.Text = argsSummary(args)
+        end
+        return
+    end
+
+    if #order >= MAX_ROWS then return end
+
+    local row = Instance.new("TextButton")
+    row.Size = UDim2.new(1, 0, 0, 26)
+    row.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
+    row.BorderSizePixel = 0; row.Text = ""; row.Parent = scroll
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 5)
+
+    local tag = Instance.new("TextLabel")
+    tag.Size = UDim2.new(0, 28, 0, 16); tag.Position = UDim2.new(0, 4, 0.5, -8)
+    tag.BackgroundColor3 = method == "FireServer" and Color3.fromRGB(0, 180, 120) or Color3.fromRGB(0, 120, 220)
+    tag.Text = method == "FireServer" and "EV" or "FN"
+    tag.TextColor3 = Color3.fromRGB(255, 255, 255); tag.Font = Enum.Font.GothamBold
+    tag.TextSize = 9; tag.Parent = row
+    Instance.new("UICorner", tag).CornerRadius = UDim.new(0, 4)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -38, 1, 0); lbl.Position = UDim2.new(0, 36, 0, 0)
+    lbl.BackgroundTransparency = 1; lbl.TextColor3 = Color3.fromRGB(230, 230, 240)
+    lbl.Font = Enum.Font.Code; lbl.TextSize = 10; lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextTruncate = Enum.TextTruncate.AtEnd
+    lbl.Text = remote.Name .. "  ×1"; lbl.Parent = row
+
+    local newRec = {
+        path = path,
+        remote = remote,
+        method = method,
+        count = 1,
+        lastArgs = args,
+        lbl = lbl,
+        row = row
+    }
+    
+    logs[path] = newRec
+    order[#order + 1] = path
+    row.Visible = (activeTab == "LOGS") and (not blocked[path])
+
+    row.MouseButton1Click:Connect(function()
+        openInspector(newRec)
+    end)
+end
+
+-- ═══ Ultra-Fast Asynchronous Scheduler (Prevents Physics/Tool Lag) ═══
+local function runScheduler()
+    if head > #pending then return end
+    for _ = 1, 6 do
+        local job = pending[head]
+        if not job then break end
+        head = head + 1
+        local remote, method, packed = job[1], job[2], job[3]
+        if typeof(remote) == "Instance" and not CoreBlacklist[remote.Name] then
+            local ok, name = pcall(function() return remote:GetFullName() end)
+            if ok and name then
+                addRow(name, remote, method, packed)
+            end
+        end
+    end
+    if head > 200 then
+        local newP = {}
+        for i = head, #pending do newP[#newP + 1] = pending[i] end
+        pending = newP; head = 1
+    end
+end
+
+-- ═══ Zero-Lag Hooking System ═══
+local oldFN2
+local function installHook()
+    if getrawmetatable and setreadonly then
+        local ok, mt = pcall(getrawmetatable, game)
+        if ok and mt and mt.__namecall then
+            local oldNC = mt.__namecall
+            setreadonly(mt, false)
+            mt.__namecall = function(self, ...)
+                local m = getnamecallmethod()
+                if m == "FireServer" or m == "InvokeServer" then
+                    -- Zero lag capture (No GetFullName inside hook!)
+                    if not paused then
+                        pending[#pending + 1] = {self, m, table.pack(...)}
+                    end
+                end
+                return oldNC(self, ...)
+            end
+            setreadonly(mt, true)
+            original = function(...) return oldNC(...) end
+            return true, "getrawmetatable"
+        end
+    end
+
+    if hookmetamethod then
+        local ok, oldFN = pcall(function()
+            return hookmetamethod(game, "__namecall", function(self, ...)
+                local m = getnamecallmethod()
+                if m == "FireServer" or m == "InvokeServer" then
+                    if not paused then
+                        pending[#pending + 1] = {self, m, table.pack(...)}
+                    end
+                end
+                return oldFN2(self, ...)
+            end)
+        end)
+        if ok and oldFN then
+            oldFN2 = oldFN
+            original = function(...) return oldFN(...) end
+            return true, "hookmetamethod"
+        end
+    end
+    return false, "No Hook"
+end
+
+local function removeHook()
+    if autoFireTask then task.cancel(autoFireTask) end
+    if not original then return end
+    pcall(function()
+        if getrawmetatable and setreadonly then
+            local mt = getrawmetatable(game)
+            setreadonly(mt, false)
+            mt.__namecall = original
+            setreadonly(mt, true)
+        end
+    end)
+    original = nil
+end
+
+local function shutdown()
+    removeHook()
+    if sg then sg:Destroy() end
+    _G.VANTA_SPY_SHUTDOWN = nil
+end
+_G.VANTA_SPY_SHUTDOWN = shutdown
+
+-- ═══ Inspector Action Events ═══
+local function getActiveArgs()
+    if not activeRec then return {} end
+    local parsed = parseArgsString(payloadBox.Text)
+    if parsed then return parsed end
+    return activeRec.lastArgs or {}
+end
+
+fireOnceBtn.MouseButton1Click:Connect(function()
+    if not activeRec or not activeRec.remote then return end
+    local args = getActiveArgs()
+    task.spawn(function()
+        if activeRec.method == "FireServer" then
+            activeRec.remote:FireServer(unpack(args))
+        elseif activeRec.method == "InvokeServer" then
+            activeRec.remote:InvokeServer(unpack(args))
+        end
+    end)
+    say("▶ تم الإرسال")
+end)
+
+autoFireBtn.MouseButton1Click:Connect(function()
+    if not activeRec or not activeRec.remote then return end
+    autoFiring = not autoFiring
+    if autoFiring then
+        autoFireBtn.Text = "🛑 إيقاف التكرار"
+        autoFireBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
+        local args = getActiveArgs()
+        autoFireTask = task.spawn(function()
+            while autoFiring and activeRec and activeRec.remote do
+                if activeRec.method == "FireServer" then
+                    activeRec.remote:FireServer(unpack(args))
+                elseif activeRec.method == "InvokeServer" then
+                    activeRec.remote:InvokeServer(unpack(args))
+                end
+                task.wait(1 / autoRate)
+            end
+        end)
+        say("⚡ تم تشغيل التكرار")
+    else
+        if autoFireTask then task.cancel(autoFireTask) end
+        autoFireBtn.Text = "⚡ تشغيل التكرار"
+        autoFireBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 60)
+        say("🛑 تم إيقاف التكرار")
+    end
+end)
+
+aiAnalyzeBtn.MouseButton1Click:Connect(function()
+    if not activeRec then return end
+    local prompt = generateAIPrompt(activeRec)
+    if setclipboard then
+        setclipboard(prompt)
+        say("🤖 تم نسخ تقرير AI للحافظة!")
+    else
+        say("لا يوجد clipboard")
+    end
+end)
+
+rateUp.MouseButton1Click:Connect(function()
+    autoRate = math.min(autoRate + 10, 50)
+    rateLbl.Text = string.format("⚡ السرعة: %d / ثانية", autoRate)
+end)
+
+rateDown.MouseButton1Click:Connect(function()
+    autoRate = math.max(autoRate - 5, 1)
+    rateLbl.Text = string.format("⚡ السرعة: %d / ثانية", autoRate)
+end)
+
+favToggleBtn.MouseButton1Click:Connect(function()
+    if not activeRec then return end
+    local p = activeRec.path
+    favorites[p] = not favorites[p]
+    favToggleBtn.Text = favorites[p] and "⭐ في المفضلة" or "⭐ إضافة للمفضلة"
+    say(favorites[p] and "⭐ أُضيفت للمفضلة" or "تم الحذف من المفضلة")
+end)
+
+copyCodeBtn.MouseButton1Click:Connect(function()
+    if not activeRec then return end
+    local code = generateExecutableCode(activeRec.path, activeRec.method, getActiveArgs(), autoFiring)
+    if setclipboard then
+        setclipboard(code); say("✓ تم نسخ الكود")
+    else say("لا يوجد clipboard") end
+end)
+
+copyPathBtn.MouseButton1Click:Connect(function()
+    if not activeRec then return end
+    if setclipboard then
+        setclipboard(activeRec.path); say("✓ تم نسخ المسار")
+    else say("لا يوجد clipboard") end
+end)
+
+blockBtn.MouseButton1Click:Connect(function()
+    if not activeRec then return end
+    local p = activeRec.path
+    blocked[p] = not blocked[p]
+    blockBtn.Text = blocked[p] and "🟢 إلغاء الحظر" or "🚫 حظر (Block)"
+    say(blocked[p] and "🚫 تم حظر الريموت" or "🟢 تم إلغاء الحظر")
+end)
+
+-- ═══ Global Controls ═══
+copyAllBtn.MouseButton1Click:Connect(function()
+    local out = {}
+    for _, p in ipairs(order) do
+        local rec = logs[p]
+        if rec then
+            out[#out + 1] = generateExecutableCode(rec.path, rec.method, rec.lastArgs, false)
+        end
+    end
+    if setclipboard then
+        setclipboard(table.concat(out, "\n")); say("✓ تم نسخ الكل")
+    else say("لا يوجد clipboard") end
+end)
+
+clearBtn.MouseButton1Click:Connect(function()
+    for _, p in ipairs(order) do
+        local rec = logs[p]
+        if rec and rec.row then rec.row:Destroy() end
+    end
+    logs = {}; order = {}; pending = {}; head = 1; activeRec = nil
+    pathLbl.Text = "اختر ريموت أولاً من السجل..."
+    payloadBox.Text = ""
+    say("🧹 تم مسح السجل")
+end)
+
+pauseBtn.MouseButton1Click:Connect(function()
+    paused = not paused
+    pauseBtn.Text = paused and "استئناف" or "إيقاف"
+    pauseBtn.TextColor3 = paused and Color3.fromRGB(240, 90, 90) or Color3.fromRGB(120, 220, 140)
+end)
+
+typeBtn.MouseButton1Click:Connect(function()
+    if filterType == "ALL" then filterType = "EVENT"; typeBtn.Text = "Events فقط"
+    elseif filterType == "EVENT" then filterType = "FUNC"; typeBtn.Text = "Funcs فقط"
+    else filterType = "ALL"; typeBtn.Text = "الكل (ALL)" end
+    switchTab(activeTab)
+end)
+
+filterBox:GetPropertyChangedSignal("Text"):Connect(function()
+    filterText = filterBox.Text
+    switchTab(activeTab)
+end)
+
+closeBtn.MouseButton1Click:Connect(shutdown)
+minBtn.MouseButton1Click:Connect(function() root.Visible = false end)
+toggleBtn.MouseButton1Click:Connect(function() root.Visible = not root.Visible end)
+
+-- ═══ Touch & Dragging ═══
+local function makeDraggable(frame, handle)
+    local dragging, dragStart, startPos
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true; dragStart = input.Position; startPos = frame.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement then
+            local d = input.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y
+            )
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+end
+
+makeDraggable(root, titleBar)
+makeDraggable(toggleBtn, toggleBtn)
+
+RunService.Heartbeat:Connect(runScheduler)
+
+local ok, method = installHook()
+if ok then
+    say("✓ VANTA Spy v8 جاهز ومحسّن للفيزياء والأدوات")
+else
+    say("✗ فشل التثبيت: " .. tostring(method))
+end

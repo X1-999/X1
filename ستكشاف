@@ -1,0 +1,313 @@
+-- ═══════════════════════════════════════════════════════════════════════
+--   VANTA // DIMENSION READER — أبعاد دقيقة لأي شيء تمسكه
+--   يعرض كل الأجزاء والأبعاد وزر نسخ
+-- ═══════════════════════════════════════════════════════════════════════
+
+if _G.VANTA_DIM_SHUTDOWN then pcall(_G.VANTA_DIM_SHUTDOWN) end
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS        = game:GetService("UserInputService")
+local LP         = Players.LocalPlayer
+local PG         = LP:WaitForChild("PlayerGui")
+
+-- ═══ STATE ═══
+local CONNECTIONS = {}
+local sg = nil
+local scroll = nil
+local currentPart = nil
+local currentReport = ""
+local lastScan = 0
+
+local function addConn(c) CONNECTIONS[#CONNECTIONS+1] = c; return c end
+
+-- ═══ DETECT HELD PART ═══
+local function getHeldPart()
+    local gp = workspace:FindFirstChild("GrabParts")
+    if not gp then return nil end
+    local grabPart = gp:FindFirstChild("GrabPart")
+    if not grabPart then return nil end
+    local weld = grabPart:FindFirstChild("WeldConstraint")
+    if not weld then return nil end
+    return weld.Part1
+end
+
+-- ═══ FORMAT HELPERS ═══
+local function n(v) return string.format("%.3f", v) end
+local function vec3(v) return string.format("Vector3.new(%.3f, %.3f, %.3f)", v.X, v.Y, v.Z) end
+local function rgb(c) return string.format("Color3.fromRGB(%d, %d, %d)",
+    math.floor(c.R*255+0.5), math.floor(c.G*255+0.5), math.floor(c.B*255+0.5)) end
+
+local function shapeOf(p)
+    if p:IsA("Part") then
+        local s = tostring(p.Shape):gsub("Enum.PartType.", "")
+        return s
+    elseif p:IsA("MeshPart") then return "MeshPart"
+    elseif p:IsA("WedgePart") then return "Wedge"
+    elseif p:IsA("TrussPart") then return "Truss"
+    elseif p:IsA("CornerWedgePart") then return "CornerWedge"
+    else return p.ClassName end
+end
+
+-- ═══ BUILD REPORT ═══
+local function buildReport(part)
+    local L = {}
+    local function add(s) L[#L+1] = s end
+
+    local model = part:FindFirstAncestorOfClass("Model")
+
+    add("═══════════════════════════════════════════")
+    add("  PART: "..part.Name.."  ["..part.ClassName.."]")
+    if model then add("  MODEL: "..model.Name) end
+    add("  PATH: "..part:GetFullName())
+    add("═══════════════════════════════════════════")
+    add("")
+
+    add("── SIZE ──")
+    add("  X (width)  = "..n(part.Size.X))
+    add("  Y (height) = "..n(part.Size.Y))
+    add("  Z (depth)  = "..n(part.Size.Z))
+    add("  Vector3    = "..vec3(part.Size))
+    add("")
+
+    add("── SHAPE ──")
+    add("  "..shapeOf(part))
+    add("")
+
+    add("── COLOR ──")
+    add("  "..rgb(part.Color))
+    add("  R="..math.floor(part.Color.R*255+0.5).." G="..math.floor(part.Color.G*255+0.5).." B="..math.floor(part.Color.B*255+0.5))
+    add("  BrickColor: "..tostring(part.BrickColor))
+    add("")
+
+    add("── MATERIAL & SURFACE ──")
+    add("  Material:    "..tostring(part.Material))
+    add("  Reflectance: "..n(part.Reflectance))
+    add("  Transparency: "..n(part.Transparency))
+    add("")
+
+    add("── PHYSICS ──")
+    add("  Anchored:   "..tostring(part.Anchored))
+    add("  CanCollide: "..tostring(part.CanCollide))
+    add("  CanQuery:   "..tostring(part.CanQuery))
+    add("  CanTouch:   "..tostring(part.CanTouch))
+    add("  Massless:   "..tostring(part.Massless))
+    add("  AssemblyMass: "..n(part.AssemblyMass))
+    add("")
+
+    add("── ORIENTATION (current CFrame) ──")
+    local pos = part.Position
+    local rx, ry, rz = part.CFrame:ToEulerAnglesXYZ()
+    add("  Position: ("..n(pos.X)..", "..n(pos.Y)..", "..n(pos.Z)..")")
+    add("  Rotation (deg): X="..math.floor(math.deg(rx)+0.5).." Y="..math.floor(math.deg(ry)+0.5).." Z="..math.floor(math.deg(rz)+0.5))
+    add("")
+
+    if model then
+        add("── MODEL PARTS ("..#model:GetDescendants().." descendants) ──")
+        local count = 0
+        for _, d in ipairs(model:GetDescendants()) do
+            if d:IsA("BasePart") then
+                count = count + 1
+                add(string.format("  %2d) %-25s %-12s size=(%s, %s, %s)",
+                    count,
+                    d.Name,
+                    d.ClassName,
+                    n(d.Size.X), n(d.Size.Y), n(d.Size.Z)))
+            end
+        end
+        add("")
+        add("  Total BaseParts in model: "..count)
+        add("")
+    end
+
+    add("── QUICK REBUILD RECIPE ──")
+    add(string.format('local p = Instance.new("%s")', part.ClassName))
+    add('p.Name = "'..part.Name..'"')
+    add("p.Size = "..vec3(part.Size))
+    add("p.Color = "..rgb(part.Color))
+    add("p.Material = Enum.Material."..tostring(part.Material))
+    if part:IsA("Part") then
+        add("p.Shape = Enum.PartType."..shapeOf(part))
+    end
+    add("p.CanCollide = "..tostring(part.CanCollide))
+    add("p.Anchored = "..tostring(part.Anchored))
+    add("")
+    add("═══════════════════════════════════════════")
+
+    return table.concat(L, "\n")
+end
+
+-- ═══ UI UPDATE ═══
+local function refreshUI()
+    local part = getHeldPart()
+    if not part then
+        currentPart = nil
+        currentReport = ""
+        if scroll then
+            for _, c in ipairs(scroll:GetChildren()) do
+                if c:IsA("TextLabel") then c:Destroy() end
+            end
+        end
+        return
+    end
+
+    if part == currentPart then return end
+    currentPart = part
+    currentReport = buildReport(part)
+
+    -- امسح القديم
+    for _, c in ipairs(scroll:GetChildren()) do
+        if c:IsA("TextLabel") then c:Destroy() end
+    end
+
+    -- اعرض الجديد
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -10, 0, 0)
+    lbl.Position = UDim2.new(0, 5, 0, 5)
+    lbl.AutomaticSize = Enum.AutomaticSize.Y
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = Color3.fromRGB(200, 255, 220)
+    lbl.Font = Enum.Font.Code
+    lbl.TextSize = 10
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextYAlignment = Enum.TextYAlignment.Top
+    lbl.TextWrapped = true
+    lbl.Text = currentReport
+    lbl.Parent = scroll
+
+    -- انسخ تلقائيًا
+    if setclipboard then
+        setclipboard(currentReport)
+    end
+end
+
+addConn(RunService.Heartbeat:Connect(function()
+    local now = tick()
+    if (now - lastScan) > 0.3 then
+        lastScan = now
+        refreshUI()
+    end
+end))
+
+-- ═══ SHUTDOWN ═══
+local function shutdown()
+    for _, c in ipairs(CONNECTIONS) do pcall(function() c:Disconnect() end) end
+    CONNECTIONS = {}
+    if sg then pcall(function() sg:Destroy() end); sg = nil end
+    local lo = PG:FindFirstChild("VANTA_Dim")
+    if lo then pcall(function() lo:Destroy() end) end
+    _G.VANTA_DIM_SHUTDOWN = nil
+end
+_G.VANTA_DIM_SHUTDOWN = shutdown
+
+-- ═══ UI ═══
+local old = PG:FindFirstChild("VANTA_Dim")
+if old then old:Destroy() end
+
+sg = Instance.new("ScreenGui")
+sg.Name = "VANTA_Dim"
+sg.ResetOnSpawn = false
+sg.IgnoreGuiInset = true
+sg.DisplayOrder = 998
+sg.Parent = PG
+
+local root = Instance.new("Frame")
+root.Size = UDim2.new(0, 340, 0, 400)
+root.Position = UDim2.new(0, 20, 0, 80)
+root.BackgroundColor3 = Color3.fromRGB(10,10,14)
+root.BorderSizePixel = 0
+root.Active = true
+root.Parent = sg
+Instance.new("UICorner", root).CornerRadius = UDim.new(0, 10)
+local s = Instance.new("UIStroke", root)
+s.Color = Color3.fromRGB(0, 200, 160); s.Thickness = 1
+
+local bar = Instance.new("Frame")
+bar.Size = UDim2.new(1,0,0,30)
+bar.BackgroundColor3 = Color3.fromRGB(20,20,26)
+bar.BorderSizePixel = 0
+bar.Parent = root
+Instance.new("UICorner", bar).CornerRadius = UDim.new(0, 10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,-40,1,0)
+title.Position = UDim2.new(0,10,0,0)
+title.BackgroundTransparency = 1
+title.Text = "◈ DIMENSION READER"
+title.TextColor3 = Color3.fromRGB(235,235,240)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 13
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = bar
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0,30,1,0)
+closeBtn.Position = UDim2.new(1,-32,0,0)
+closeBtn.BackgroundTransparency = 1
+closeBtn.Text = "✕"
+closeBtn.TextColor3 = Color3.fromRGB(200,200,210)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 14
+closeBtn.Parent = bar
+
+scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1,-12,1,-80)
+scroll.Position = UDim2.new(0,6,0,36)
+scroll.BackgroundColor3 = Color3.fromRGB(8,8,12)
+scroll.BackgroundTransparency = 0.2
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 5
+scroll.CanvasSize = UDim2.new(0,0,0,0)
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.Parent = root
+Instance.new("UICorner", scroll).CornerRadius = UDim.new(0, 8)
+
+local copyBtn = Instance.new("TextButton")
+copyBtn.Size = UDim2.new(1,-20,0,32)
+copyBtn.Position = UDim2.new(0,10,1,-40)
+copyBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 120)
+copyBtn.TextColor3 = Color3.fromRGB(255,255,255)
+copyBtn.Font = Enum.Font.GothamBold
+copyBtn.TextSize = 13
+copyBtn.Text = "📋 COPY (auto-copied on hold)"
+copyBtn.BorderSizePixel = 0
+copyBtn.Parent = root
+Instance.new("UICorner", copyBtn).CornerRadius = UDim.new(0, 8)
+
+copyBtn.MouseButton1Click:Connect(function()
+    if currentReport ~= "" and setclipboard then
+        setclipboard(currentReport)
+    end
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    sg.Enabled = false
+end)
+
+-- drag
+do
+    local dragging, dragStart, startPos
+    bar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true; dragStart = input.Position; startPos = root.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseMovement then
+            local d = input.Position - dragStart
+            root.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                     startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+end
+
+print("[VANTA] Dimension Reader ready — امسك أي شيء ليقرأ أبعاده.")
